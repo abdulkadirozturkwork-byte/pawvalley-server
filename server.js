@@ -18,13 +18,24 @@ const server = http.createServer((req, res) => {
   if (req.url === '/health') {
     let players = 0; for (const r of rooms.values()) players += r.size;
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ ok: true, rooms: rooms.size, players, joins: stats.joins, uptime: Math.round((Date.now() - stats.started) / 1000) }));
+    res.end(JSON.stringify({ ok: true, rooms: rooms.size, players, joins: stats.joins, outMB: +(outBytes() / 1048576).toFixed(1), uptime: Math.round((Date.now() - stats.started) / 1000) }));
     return;
   }
   res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
   res.end('Pati Vadisi sunucusu çalışıyor');
 });
-const wss = new WebSocketServer({ server, maxPayload: 16 * 1024 });
+// perMessageDeflate: mesajlar sıkıştırılır (oyun verisi metin olduğu için ~5-10 kat küçülür, aylık trafik kotası korunur)
+const wss = new WebSocketServer({
+  server, maxPayload: 16 * 1024,
+  perMessageDeflate: {
+    zlibDeflateOptions: { level: 6, memLevel: 7 },
+    serverMaxWindowBits: 13, clientMaxWindowBits: 13,
+    threshold: 128, concurrencyLimit: 10
+  }
+});
+// giden trafik sayacı (/health içinde MB olarak görünür)
+let outDone = 0;
+function outBytes() { let b = outDone; for (const c of wss.clients) if (c._socket) b += c._socket.bytesWritten; return b; }
 
 function send(ws, msg) { if (ws && ws.readyState === 1) ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg)); }
 function bcast(room, from, msg) { const s = JSON.stringify(msg); for (const [id, c] of room) if (id !== from) send(c.ws, s); }
@@ -83,7 +94,7 @@ wss.on('connection', (ws) => {
     }
   });
 
-  ws.on('close', () => { if (room) { const c = room.get(id); if (c && c.ws === ws) removeMe(false); } });
+  ws.on('close', () => { if (ws._socket) outDone += ws._socket.bytesWritten; if (room) { const c = room.get(id); if (c && c.ws === ws) removeMe(false); } });
   ws.on('error', () => {});
 });
 
